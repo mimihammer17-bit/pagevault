@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PageVault — Mini moteur de recherche</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
+
+  <!-- Firebase -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import {
+      getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
+      signOut, onAuthStateChanged
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+    import {
+      getFirestore, collection, addDoc, getDocs, doc, getDoc, query, orderBy, serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+    // ─── REMPLACE CES VALEURS PAR TON firebase-config.js ───
+    import { firebaseConfig } from "./firebase-config.js";
+    // ────────────────────────────────────────────────────────
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    // ── State ──
+    let currentUser = null;
+    let allPages = [];
+
+    // ── Auth listener ──
+    onAuthStateChanged(auth, user => {
+      currentUser = user;
+      document.getElementById("user-status").textContent = user
+        ? `✦ ${user.email}`
+        : "non connecté";
+      document.getElementById("btn-signout").style.display = user ? "inline-block" : "none";
+    });
+
+    // ── Load all pages ──
+    async function loadPages() {
+      const q = query(collection(db, "pages"), orderBy("createdAt", "desc"));
+      const snap = await getDocs(q);
+      allPages = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
+
+    // ── Fuzzy search (score par similarité de nom) ──
+    function fuzzyScore(name, query) {
+      name = name.toLowerCase();
+      query = query.toLowerCase().trim();
+      if (name === query) return 100;
+      if (name.startsWith(query)) return 80;
+      if (name.includes(query)) return 60;
+      let score = 0, qi = 0;
+      for (let ni = 0; ni < name.length && qi < query.length; ni++) {
+        if (name[ni] === query[qi]) { score += 1; qi++; }
+      }
+      return qi === query.length ? Math.round((score / name.length) * 40) : 0;
+    }
+
+    function searchPages(q) {
+      if (!q.trim()) return [];
+      return allPages
+        .map(p => ({ ...p, score: fuzzyScore(p.name, q) }))
+        .filter(p => p.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 8);
+    }
+
+    // ── Expose to window ──
+    window._firebase = {
+      auth, db, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut,
+      collection, addDoc, serverTimestamp, doc, getDoc,
+      loadPages, searchPages,
+      getAuth: () => auth,
+    };
+    window._firebase.loadPages().catch(console.error);
+
+    // Signal ready
+    document.dispatchEvent(new Event("firebase-ready"));
+  </script>
+
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --surface: #111118;
+      --surface2: #1a1a24;
+      --border: #2a2a3a;
+      --accent: #c8f04a;
+      --accent2: #4af0c8;
+      --text: #e8e8f0;
+      --muted: #6060780;
+      --muted: #606078;
+      --danger: #f04a6a;
+      --radius: 8px;
+      --font-head: 'Syne', sans-serif;
+      --font-mono: 'DM Mono', monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-mono);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ─ Grid bg ─ */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image:
+        linear-gradient(rgba(200,240,74,.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(200,240,74,.04) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ─ Header ─ */
+    header {
+      position: fixed; top: 0; left: 0; right: 0;
+      z-index: 100;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 2rem;
+      height: 56px;
+      background: rgba(10,10,15,.85);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo {
+      font-family: var(--font-head);
+      font-weight: 800;
+      font-size: 1.2rem;
+      letter-spacing: -0.03em;
+      color: var(--accent);
+    }
+    .logo span { color: var(--text); }
+
+    .header-right {
+      display: flex; align-items: center; gap: 1rem;
+      font-size: .75rem;
+      color: var(--muted);
+    }
+
+    #user-status { color: var(--accent2); }
+
+    /* ─ Nav tabs ─ */
+    nav {
+      display: flex; gap: 0;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    nav button {
+      background: none; border: none;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: .72rem;
+      font-weight: 500;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      padding: .4rem .9rem;
+      cursor: pointer;
+      transition: all .2s;
+    }
+    nav button:hover { color: var(--text); background: rgba(255,255,255,.04); }
+    nav button.active { background: var(--accent); color: #0a0a0f; font-weight: 600; }
+
+    /* ─ Main layout ─ */
+    main {
+      position: relative;
+      z-index: 1;
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 80px 1.5rem 4rem;
+    }
+
+    /* ─ Views ─ */
+    .view { display: none; }
+    .view.active { display: block; }
+
+    /* ─── SEARCH VIEW ─── */
+    .search-hero {
+      text-align: center;
+      padding: 3rem 0 2.5rem;
+    }
+
+    .search-hero h1 {
+      font-family: var(--font-head);
+      font-weight: 800;
+      font-size: clamp(2.2rem, 6vw, 3.8rem);
+      letter-spacing: -.04em;
+      line-height: 1;
+      margin-bottom: .5rem;
+    }
+    .search-hero h1 em {
+      font-style: normal;
+      color: var(--accent);
+    }
+
+    .search-hero p {
+      font-size: .8rem;
+      color: var(--muted);
+      letter-spacing: .06em;
+    }
+
+    .search-box {
+      position: relative;
+      margin: 2rem 0 0;
+    }
+
+    .search-box input {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 1rem;
+      padding: .9rem 1.2rem .9rem 3rem;
+      outline: none;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .search-box input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(200,240,74,.12);
+    }
+    .search-box input::placeholder { color: var(--muted); }
+
+    .search-icon {
+      position: absolute;
+      left: 1rem; top: 50%;
+      transform: translateY(-50%);
+      color: var(--muted);
+      font-size: 1rem;
+      pointer-events: none;
+    }
+
+    /* ─ Results ─ */
+    #results {
+      margin-top: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: .5rem;
+    }
+
+    .result-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: .9rem 1.2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      transition: all .18s;
+      text-decoration: none;
+      color: inherit;
+    }
+    .result-card:hover {
+      border-color: var(--accent);
+      background: var(--surface2);
+      transform: translateX(4px);
+    }
+
+    .result-left { display: flex; align-items: center; gap: .8rem; }
+
+    .result-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      flex-shrink: 0;
+    }
+
+    .result-name {
+      font-family: var(--font-head);
+      font-weight: 600;
+      font-size: .95rem;
+    }
+
+    .result-meta {
+      font-size: .7rem;
+      color: var(--muted);
+      margin-top: .15rem;
+    }
+
+    .result-score {
+      font-size: .65rem;
+      color: var(--accent2);
+      letter-spacing: .08em;
+      background: rgba(74,240,200,.08);
+      border: 1px solid rgba(74,240,200,.15);
+      border-radius: 4px;
+      padding: .2rem .5rem;
+    }
+
+    .empty-state {
+      text-align: center;
+      color: var(--muted);
+      font-size: .8rem;
+      padding: 3rem 0;
+      letter-spacing: .06em;
+    }
+
+    /* ─── CREATOR VIEW ─── */
+    .auth-card, .creator-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      max-width: 520px;
+      margin: 2rem auto 0;
+    }
+
+    .card-title {
+      font-family: var(--font-head);
+      font-weight: 700;
+      font-size: 1.3rem;
+      margin-bottom: 1.5rem;
+      letter-spacing: -.02em;
+    }
+    .card-title span { color: var(--accent); }
+
+    .field { margin-bottom: 1.1rem; }
+    .field label {
+      display: block;
+      font-size: .7rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: .4rem;
+    }
+    .field input, .field textarea {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: .85rem;
+      padding: .7rem 1rem;
+      outline: none;
+      resize: vertical;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .field textarea { min-height: 200px; font-size: .78rem; line-height: 1.5; }
+    .field input:focus, .field textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(200,240,74,.1);
+    }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: .5rem;
+      background: var(--accent);
+      color: #0a0a0f;
+      font-family: var(--font-head);
+      font-weight: 700;
+      font-size: .85rem;
+      letter-spacing: .02em;
+      padding: .7rem 1.5rem;
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: all .18s;
+    }
+    .btn:hover { background: #d8ff55; transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+
+    .btn-secondary {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { background: var(--surface2); transform: none; }
+
+    .btn-danger {
+      background: transparent;
+      color: var(--danger);
+      border: 1px solid rgba(240,74,106,.3);
+      font-size: .75rem;
+      padding: .4rem .9rem;
+    }
+    .btn-danger:hover { background: rgba(240,74,106,.1); transform: none; }
+
+    #btn-signout { display: none; }
+
+    .auth-toggle {
+      text-align: center;
+      margin-top: 1rem;
+      font-size: .75rem;
+      color: var(--muted);
+    }
+    .auth-toggle a { color: var(--accent2); cursor: pointer; text-decoration: underline; }
+
+    .status-msg {
+      padding: .6rem 1rem;
+      border-radius: var(--radius);
+      font-size: .78rem;
+      margin-bottom: 1rem;
+      display: none;
+    }
+    .status-msg.success { background: rgba(200,240,74,.1); border: 1px solid rgba(200,240,74,.2); color: var(--accent); }
+    .status-msg.error { background: rgba(240,74,106,.1); border: 1px solid rgba(240,74,106,.2); color: var(--danger); }
+    .status-msg.show { display: block; }
+
+    /* ─── PAGE VIEWER ─── */
+    #page-viewer {
+      position: fixed; inset: 0;
+      z-index: 200;
+      background: var(--bg);
+      display: none;
+      flex-direction: column;
+    }
+    #page-viewer.open { display: flex; }
+
+    .viewer-bar {
+      height: 50px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0 1.2rem;
+      flex-shrink: 0;
+    }
+
+    .viewer-title {
+      font-family: var(--font-head);
+      font-weight: 700;
+      font-size: .95rem;
+      flex: 1;
+    }
+    .viewer-author {
+      font-size: .7rem;
+      color: var(--muted);
+    }
+
+    #viewer-frame {
+      flex: 1;
+      border: none;
+      background: #fff;
+    }
+
+    /* ─ My pages list ─ */
+    .pages-list { margin-top: 1.5rem; display: flex; flex-direction: column; gap: .5rem; }
+    .page-item {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: .7rem 1rem;
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: .82rem;
+    }
+    .page-item-name { font-family: var(--font-head); font-weight: 600; }
+    .page-item-date { font-size: .65rem; color: var(--muted); }
+
+    /* ─ Loader ─ */
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid rgba(200,240,74,.3);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ─ Separator ─ */
+    .sep {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 1.5rem 0;
+    }
+
+    /* ─ Section label ─ */
+    .section-label {
+      font-size: .65rem;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: .8rem;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ─── HEADER ─── -->
+<header>
+  <div class="logo">Page<span>Vault</span></div>
+  <div class="header-right">
+    <span id="user-status">non connecté</span>
+    <nav>
+      <button class="active" onclick="switchView('search')">🔍 Recherche</button>
+      <button onclick="switchView('creator')">✦ Créateur</button>
+    </nav>
+    <button class="btn btn-danger" id="btn-signout" onclick="doSignOut()">Déco</button>
+  </div>
+</header>
+
+<!-- ─── MAIN ─── -->
+<main>
+
+  <!-- SEARCH VIEW -->
+  <div class="view active" id="view-search">
+    <div class="search-hero">
+      <h1>Trouve<br/>n'importe quelle <em>page</em></h1>
+      <p>// MOTEUR DE RECHERCHE COMMUNAUTAIRE</p>
+    </div>
+
+    <div class="search-box">
+      <span class="search-icon">⌕</span>
+      <input type="text" id="search-input" placeholder="Nom de la page…" autocomplete="off" oninput="handleSearch(this.value)" />
+    </div>
+
+    <div id="results">
+      <div class="empty-state">Commence à taper pour chercher une page</div>
+    </div>
+  </div>
+
+  <!-- CREATOR VIEW -->
+  <div class="view" id="view-creator">
+
+    <!-- Auth panel -->
+    <div id="auth-panel">
+      <div class="auth-card">
+        <div class="card-title">Mode <span>Créateur</span></div>
+        <div class="status-msg" id="auth-msg"></div>
+
+        <div id="auth-form-login">
+          <div class="field">
+            <label>Email</label>
+            <input type="email" id="login-email" placeholder="ton@email.com" />
+          </div>
+          <div class="field">
+            <label>Mot de passe</label>
+            <input type="password" id="login-password" placeholder="••••••••" />
+          </div>
+          <button class="btn" onclick="doLogin()">Se connecter</button>
+          <div class="auth-toggle">
+            Pas de compte ? <a onclick="toggleAuthForm()">Créer un compte</a>
+          </div>
+        </div>
+
+        <div id="auth-form-register" style="display:none">
+          <div class="field">
+            <label>Email</label>
+            <input type="email" id="reg-email" placeholder="ton@email.com" />
+          </div>
+          <div class="field">
+            <label>Mot de passe</label>
+            <input type="password" id="reg-password" placeholder="••••••••" />
+          </div>
+          <button class="btn" onclick="doRegister()">Créer le compte</button>
+          <div class="auth-toggle">
+            Déjà un compte ? <a onclick="toggleAuthForm()">Se connecter</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Creator panel (logged in) -->
+    <div id="creator-panel" style="display:none">
+      <div class="creator-card">
+        <div class="card-title">Publier une <span>page</span></div>
+        <div class="status-msg" id="publish-msg"></div>
+
+        <div class="field">
+          <label>Nom de la page</label>
+          <input type="text" id="page-name" placeholder="Mon super projet…" maxlength="80" />
+        </div>
+
+        <div class="field">
+          <label>Code HTML de la page</label>
+          <textarea id="page-html" placeholder="<!DOCTYPE html>&#10;<html>&#10;  <body>&#10;    <h1>Ma page !</h1>&#10;  </body>&#10;</html>"></textarea>
+        </div>
+
+        <button class="btn" onclick="doPublish()" id="btn-publish">
+          ✦ Publier
+        </button>
+
+        <hr class="sep">
+
+        <div class="section-label">Mes pages publiées</div>
+        <div class="pages-list" id="my-pages-list">
+          <div class="empty-state" style="padding:1rem 0">Chargement…</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<!-- ─── PAGE VIEWER ─── -->
+<div id="page-viewer">
+  <div class="viewer-bar">
+    <button class="btn btn-secondary" style="padding:.4rem .9rem;font-size:.75rem" onclick="closeViewer()">← Retour</button>
+    <div class="viewer-title" id="viewer-page-title">—</div>
+    <div class="viewer-author" id="viewer-page-author"></div>
+  </div>
+  <iframe id="viewer-frame" sandbox="allow-scripts allow-same-origin"></iframe>
+</div>
+
+<script>
+// ── View switching ──
+function switchView(name) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById('view-' + name).classList.add('active');
+  document.querySelectorAll('nav button').forEach((b, i) => {
+    b.classList.toggle('active', (name === 'search' && i === 0) || (name === 'creator' && i === 1));
+  });
+  if (name === 'creator') refreshCreatorView();
+}
+
+// ── Auth toggle ──
+function toggleAuthForm() {
+  const login = document.getElementById('auth-form-login');
+  const reg = document.getElementById('auth-form-register');
+  login.style.display = login.style.display === 'none' ? 'block' : 'none';
+  reg.style.display = reg.style.display === 'none' ? 'block' : 'none';
+}
+
+function showMsg(id, msg, type) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.className = 'status-msg show ' + type;
+  setTimeout(() => el.classList.remove('show'), 4000);
+}
+
+// ── Wait for Firebase ──
+function whenReady(fn) {
+  if (window._firebase) return fn();
+  document.addEventListener('firebase-ready', fn, { once: true });
+}
+
+// ── Auth ──
+function doLogin() {
+  whenReady(async () => {
+    const { auth, signInWithEmailAndPassword } = window._firebase;
+    const email = document.getElementById('login-email').value.trim();
+    const pwd = document.getElementById('login-password').value;
+    try {
+      await signInWithEmailAndPassword(auth, email, pwd);
+      refreshCreatorView();
+    } catch(e) {
+      showMsg('auth-msg', 'Erreur : ' + e.message, 'error');
+    }
+  });
+}
+
+function doRegister() {
+  whenReady(async () => {
+    const { auth, createUserWithEmailAndPassword } = window._firebase;
+    const email = document.getElementById('reg-email').value.trim();
+    const pwd = document.getElementById('reg-password').value;
+    try {
+      await createUserWithEmailAndPassword(auth, email, pwd);
+      refreshCreatorView();
+    } catch(e) {
+      showMsg('auth-msg', 'Erreur : ' + e.message, 'error');
+    }
+  });
+}
+
+function doSignOut() {
+  whenReady(async () => {
+    const { auth, signOut } = window._firebase;
+    await signOut(auth);
+    refreshCreatorView();
+  });
+}
+
+// ── Refresh creator panel ──
+function refreshCreatorView() {
+  whenReady(async () => {
+    const user = window._firebase.getAuth().currentUser;
+    document.getElementById('auth-panel').style.display = user ? 'none' : 'block';
+    document.getElementById('creator-panel').style.display = user ? 'block' : 'none';
+    if (user) loadMyPages(user.uid);
+  });
+}
+
+// ── Publish ──
+function doPublish() {
+  whenReady(async () => {
+    const { auth, db, collection, addDoc, serverTimestamp, loadPages } = window._firebase;
+    const user = auth.currentUser;
+    if (!user) return;
+
+    const name = document.getElementById('page-name').value.trim();
+    const html = document.getElementById('page-html').value.trim();
+    if (!name) return showMsg('publish-msg', 'Donne un nom à ta page.', 'error');
+    if (!html) return showMsg('publish-msg', 'Le HTML est vide.', 'error');
+
+    const btn = document.getElementById('btn-publish');
+    btn.innerHTML = '<span class="spinner"></span> Publication…';
+    btn.disabled = true;
+
+    try {
+      await addDoc(collection(db, 'pages'), {
+        name,
+        html,
+        authorId: user.uid,
+        authorEmail: user.email,
+        createdAt: serverTimestamp()
+      });
+      document.getElementById('page-name').value = '';
+      document.getElementById('page-html').value = '';
+      showMsg('publish-msg', '✦ Page publiée avec succès !', 'success');
+      await loadPages();
+      loadMyPages(user.uid);
+    } catch(e) {
+      showMsg('publish-msg', 'Erreur : ' + e.message, 'error');
+    }
+
+    btn.innerHTML = '✦ Publier';
+    btn.disabled = false;
+  });
+}
+
+// ── My pages ──
+async function loadMyPages(uid) {
+  const { db, collection, getDocs, query } = window._firebase;
+  // Use allPages already loaded (filter by authorId)
+  const mine = window._firebase.loadPages
+    ? await (async () => {
+        // reload to be fresh
+        const { collection: col, getDocs: gd, query: q, orderBy: ob } = window._firebase;
+        // simple: filter allPages
+        return window._firebase;
+      })()
+    : null;
+
+  // Actually simpler: filter allPages by uid
+  const myList = document.getElementById('my-pages-list');
+  // We need fresh data after publish → reload global
+  await window._firebase.loadPages();
+  // now filter
+  const FIREBASE = window._firebase;
+  // allPages is on module scope, use searchPages('') won't work, need direct access
+  // So we fetch directly here
+  const { db: fdb } = window._firebase;
+  const snap = await window._firebase.getDocs
+    ? (() => {throw new Error('no direct getDocs')})()
+    : null;
+
+  // Fallback: just use the search trick — show all pages by this user
+  // We stored them in a closure, access via the module. Since we can't,
+  // we do a direct Firestore query via the exposed db reference.
+  // We'll use the full collection and filter client-side.
+  try {
+    const { getFirestore, collection: col, getDocs: gd, query: fq, where, orderBy: ob } =
+      await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
+    const db2 = window._firebase.db;
+    const snap2 = await gd(fq(col(db2, 'pages'), ob('createdAt', 'desc')));
+    const all = snap2.docs.map(d => ({ id: d.id, ...d.data() }));
+    const mine = all.filter(p => p.authorId === uid);
+
+    if (mine.length === 0) {
+      myList.innerHTML = '<div class="empty-state" style="padding:.5rem 0;font-size:.75rem">Aucune page publiée</div>';
+      return;
+    }
+
+    myList.innerHTML = mine.map(p => `
+      <div class="page-item">
+        <div>
+          <div class="page-item-name">${escHtml(p.name)}</div>
+          <div class="page-item-date">${p.authorEmail}</div>
+        </div>
+        <button class="btn btn-secondary" style="font-size:.72rem;padding:.35rem .8rem"
+          onclick="openViewer('${p.id}')">Vue →</button>
+      </div>
+    `).join('');
+  } catch(e) {
+    myList.innerHTML = '<div class="empty-state" style="color:var(--danger)">Erreur de chargement</div>';
+  }
+}
+
+// ── Search ──
+function handleSearch(val) {
+  const box = document.getElementById('results');
+  if (!val.trim()) {
+    box.innerHTML = '<div class="empty-state">Commence à taper pour chercher une page</div>';
+    return;
+  }
+  const results = window._firebase ? window._firebase.searchPages(val) : [];
+  if (results.length === 0) {
+    box.innerHTML = `<div class="empty-state">Aucune page trouvée pour « ${escHtml(val)} »</div>`;
+    return;
+  }
+  box.innerHTML = results.map(p => `
+    <div class="result-card" onclick="openViewer('${p.id}')">
+      <div class="result-left">
+        <div class="result-dot"></div>
+        <div>
+          <div class="result-name">${escHtml(p.name)}</div>
+          <div class="result-meta">par ${escHtml(p.authorEmail || 'anonyme')}</div>
+        </div>
+      </div>
+      <div class="result-score">${p.score}% match</div>
+    </div>
+  `).join('');
+}
+
+// ── Viewer ──
+async function openViewer(pageId) {
+  document.getElementById('page-viewer').classList.add('open');
+  document.getElementById('viewer-page-title').textContent = '…';
+  document.getElementById('viewer-author').textContent = '';
+
+  try {
+    const { getFirestore, doc, getDoc } =
+      await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
+    const db2 = window._firebase.db;
+    const snap = await getDoc(doc(db2, 'pages', pageId));
+    if (!snap.exists()) return;
+    const data = snap.data();
+    document.getElementById('viewer-page-title').textContent = data.name;
+    document.getElementById('viewer-author').textContent = 'par ' + (data.authorEmail || 'anonyme');
+    const frame = document.getElementById('viewer-frame');
+    frame.srcdoc = data.html;
+  } catch(e) {
+    document.getElementById('viewer-page-title').textContent = 'Erreur de chargement';
+  }
+}
+
+function closeViewer() {
+  document.getElementById('page-viewer').classList.remove('open');
+  document.getElementById('viewer-frame').srcdoc = '';
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Init ──
+document.addEventListener('firebase-ready', () => {
+  // Reload search index every 30s
+  setInterval(() => window._firebase.loadPages(), 30000);
+});
+</script>
+</body>
+</html>
